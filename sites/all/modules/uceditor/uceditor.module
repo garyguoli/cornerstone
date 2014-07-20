@@ -1,0 +1,826 @@
+<?php
+
+/**
+ * @file
+ * UCEditor Module for Drupal 7.x
+ *
+ * UEditor by Baidu <website:> http://ueditor.baidu.com
+ *
+ * This module was created by M <55510696 AT qq.com>
+ *
+ */
+
+
+/**
+ * Implementation of hook_help().
+ */
+function uceditor_help($path, $args) {
+  if( !variable_get('uceditor_global_settings', NULL) ) {
+    drupal_set_message('<strong>UCEditor:</strong> Please <a href="'.base_path().'?q=admin/config/content/uceditor">CONFIGURE</a> to use.', 'warning');
+  }
+  switch ($path) {
+    case 'admin/help#uceditor':
+      return 'UCEditor.';
+      break;
+  }
+}
+
+/**
+ * Implementation of hook_menu().
+ */
+function uceditor_menu() {
+  $items = array();
+  $items['uceditor/%'] = array(
+    'title'             => 'UCEditor File browser',
+    'page callback'     => 'uceditor_file_interface',
+    'page arguments'    => array(1),
+    'access arguments'  => array('access uceditor fileupload'), //array('access content'),
+    'type'              => MENU_CALLBACK,
+  );
+  $items['admin/config/content/uceditor'] = array(
+    'title'             => 'UCEditor',
+    'description'       => 'Configure the rich text editor.',
+    'page callback'     => 'drupal_get_form',
+    'page arguments'    => array('uceditor_setting_form'),
+    'access arguments'  => array('administer uceditor'),
+    'type'              => MENU_NORMAL_ITEM,
+  );
+  $items['admin/config/content/uceditor/add'] = array(
+    'title'             => 'Add a new UCEditor profile',
+    'description'       => 'Configure the rich text editor.',
+    'page callback'     => 'drupal_get_form',
+    'page arguments'    => array('uceditor_admin_profile_form'),
+    'access arguments'  => array('administer uceditor'),
+    'type'              => MENU_NORMAL_ITEM,
+  );
+  $items['admin/config/content/uceditor/edit/%'] = array(
+    'title'             => 'Edit the UCEditor profile',
+    'description'       => 'Configure the rich text editor.',
+    'page callback'     => 'drupal_get_form',
+    'page arguments'    => array('uceditor_admin_profile_form', 5),
+    'access arguments'  => array('administer uceditor'),
+    'type'              => MENU_NORMAL_ITEM,
+  );
+  $items['admin/config/content/uceditor/delete/%'] = array(
+    'title'             => 'Delete the UCEditor profile',
+    'description'       => 'Configure the rich text editor.',
+    'page callback'     => 'drupal_get_form',
+    'page arguments'    => array('uceditor_delete_profile_form', 5),
+    'access arguments'  => array('administer uceditor'),
+    'type'              => MENU_NORMAL_ITEM,
+  );
+  $items['admin/config/content/uceditor/gset'] = array(
+    'title'             => 'Edit the UCEditor Global Settings',
+    'description'       => 'Configure the rich text editor.',
+    'page callback'     => 'drupal_get_form',
+    'page arguments'    => array('uceditor_global_settings_form'),
+    'access arguments'  => array('administer uceditor'),
+    'type'              => MENU_NORMAL_ITEM,
+  );
+
+  return $items;
+}
+
+/**
+ * Implementation of hook_permission().
+ */
+function uceditor_permission() {
+  $permissions = array();
+  $permissions['administer uceditor'] = array(
+    'title'           => t('Administer UCEditor'),
+    'restrict access' => TRUE,
+  );
+  $permissions['access uceditor fileupload'] = array(
+    'title'       => t('Access fileupload'),
+    'description' => t('access fileupload (image, file, other...)'),
+  );
+  return $permissions;
+}
+
+//@see uceditor_menu
+function uceditor_setting_form($form, $form_state) {
+  $profiles = uceditor_profile_load();
+  $header   = array(t('Profile'), t('Input format'), t('Operations'), t('Order'));
+  $rows     = array();
+  $options  = range(0, count($profiles));
+  foreach($profiles as $p) {
+    $element = array(
+      '#name'        => 'weight[' . $p->eid . ']',
+      '#type'        => 'select',
+      '#options'     => $options,
+      '#value'       => _uceditor_option_key($options, $p->weight),
+      '#attributes'  => array('class'=>array('uceditor-profile-weight')),
+    );
+    $rows[] = array(
+      'data' => array(
+        array('data' => $p->name),
+        array('data' => implode("<br />\n", $p->formats)),
+        array('data' => l(t('edit'), 'admin/config/content/uceditor/edit/' . $p->eid)
+                        . ' '
+                        . ($p->eid!=1 ? l(t('delete'), 'admin/config/content/uceditor/delete/' . $p->eid) : '')
+        ),
+        array('data' => drupal_render($element) ),
+      ),
+      'class' => array('draggable'),
+    );
+  }
+  $rows[] = array(
+    'data' => array(
+      array('data' => t('Global Settings')),
+      array('data' => variable_get('uceditor_global_settings', NULL) ? '' : '<strong>Please configure this first!</strong>'),
+      array('data' => l(t('edit'), 'admin/config/content/uceditor/gset')),
+      array('data' => '' ),
+    ),
+  );
+  $output = theme('table', array('header' => $header, 'rows' => $rows, 'attributes' => array('id'=>'uceditor-profiles-table') ));
+  drupal_add_tabledrag('uceditor-profiles-table', 'order', 'sibling', 'uceditor-profile-weight');
+  $form['tables'] = array(
+    '#markup' => $output,
+  );
+  $form['submit'] = array(
+    '#type'  => 'submit',
+    '#value' => t('Save'),
+  );
+  $form['new'] = array(
+    '#markup' => '<p>' . l(t('Create a new profile'), 'admin/config/content/uceditor/add') . '</p>',
+  );
+  return $form;
+}
+
+//@see ueuceditoretting_form
+function uceditor_setting_form_submit($form, &$form_state) {
+  if(!empty($form_state['input']['weight'])) {
+    foreach($form_state['input']['weight'] as $eid=>$weight) {
+      db_update('uceditor_settings')
+        ->fields(array('weight' => (int) $weight))
+        ->condition('eid', (int) $eid)
+        ->execute();
+    }
+  }
+  drupal_set_message(t('Your changes have been saved.'));
+  $form_state['redirect'] = 'admin/config/content/uceditor';
+}
+
+//@see uceditor_menu
+function uceditor_global_settings_form($form, $form_state) {
+  $settings = variable_get('uceditor_global_settings', NULL);
+  $settings = $settings ? unserialize($settings) : uceditor_config_default();
+  $suggest  = '<code>Suggested path:</code> sites/default/files/uceditor/<br>';
+  $form['global_help'] = array(
+    '#markup' => implode('<br>', array(
+      '%b' => '<code>%b</code> - the base URL path of the Drupal installation (<code>'._uceditor_realpath('%b').'</code>)',
+      '%m' => '<code>%m</code> - path where the UCEditor module is stored (<code>'._uceditor_realpath('%m').'</code>)',
+      '%l' => '<code>%l</code> - path to the libraries directory (<code>'._uceditor_realpath('%l').'</code>)',
+      '%f' => '<code>%f</code> - the Drupal file system path where the files are stored (<code>'._uceditor_realpath('%f').'</code>)',
+      '%d' => '<code>%d</code> - the server path to the document root (<code>'._uceditor_realpath('%d').'</code>)',
+      '%u' => '<code>%u</code> - User ID (<code>'._uceditor_realpath('%u').'</code>)',
+      '<br>',
+    )),
+    '#prefix' => '<div class="region region-help"><div class="block block-system"><div class="content">',
+    '#suffix' => '</div></div></div>',
+  );
+  $form['global_settings'] = array(
+    '#type'         => 'fieldset',
+    '#title'        => t('UCEditor Global Settings'),
+    '#collapsible'  => FALSE,
+    '#collapsed'    => FALSE,
+  );
+ /* $form['global_settings']['webAppKey'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('webAppKey'),
+    '#default_value'  => !empty($settings['webAppKey']) ? $settings['webAppKey'] : '',
+    '#description'    => 'baidu web app key. <a target="_blank" href="http://app.baidu.com/static/cms/getapikey.html">get an apikey</a>',
+  );*/
+  $imagePath = !empty($settings['imagePath']) ? $settings['imagePath'] : '%f/uceditor/';
+  $form['global_settings']['imagePath'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('imagePath'),
+    '#default_value'  => $imagePath,
+    '#description'    => $suggest.'Current path:<code>'._uceditor_realpath($imagePath).'</code>',
+  );
+  $scrawlPath = !empty($settings['scrawlPath']) ? $settings['scrawlPath'] : '%f/uceditor/';
+  $form['global_settings']['scrawlPath'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('scrawlPath'),
+    '#default_value'  => $scrawlPath,
+    '#description'    => $suggest.'Current path:<code>'._uceditor_realpath($scrawlPath).'</code>',
+  );
+  $filePath = !empty($settings['filePath']) ? $settings['filePath'] : '%f/uceditor/';
+  $form['global_settings']['filePath'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('filePath'),
+    '#default_value'  => $filePath,
+    '#description'    => $suggest.'Current path:<code>'._uceditor_realpath($filePath).'</code>',
+  );
+  $catcherPath = !empty($settings['catcherPath']) ? $settings['catcherPath'] : '%f/uceditor/';
+  $form['global_settings']['catcherPath'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('catcherPath'),
+    '#default_value'  => $catcherPath,
+    '#description'    => $suggest.'Current path:<code>'._uceditor_realpath($catcherPath).'</code>',
+  );
+  $imageManagerPath = !empty($settings['imageManagerPath']) ? $settings['imageManagerPath'] : '%f/uceditor/';
+  $form['global_settings']['imageManagerPath'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('imageManagerPath'),
+    '#default_value'  => $imageManagerPath,
+    '#description'    => $suggest.'Current path:<code>'._uceditor_realpath($imageManagerPath).'</code>',
+  );
+  $form['global_settings']['snapscreenHost'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('snapscreenHost'),
+    '#default_value'  => !empty($settings['snapscreenHost']) ? $settings['snapscreenHost'] : '127.0.0.1',
+    '#description'    => 'snapscreenHost',
+  );
+  $snapscreenPath = !empty($settings['snapscreenPath']) ? $settings['snapscreenPath'] : '%f/uceditor/';
+  $form['global_settings']['snapscreenPath'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('snapscreenPath'),
+    '#default_value'  => $snapscreenPath,
+    '#description'    => $suggest.'Current path:<code>'._uceditor_realpath($snapscreenPath).'</code>',
+  );
+  $wordImagePath = !empty($settings['wordImagePath']) ? $settings['wordImagePath'] : '%f/uceditor/';
+  $form['global_settings']['wordImagePath'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('wordImagePath'),
+    '#default_value'  => $wordImagePath,
+    '#description'    => $suggest.'Current path:<code>'._uceditor_realpath($wordImagePath).'</code>',
+  );
+  $form['global_settings']['submit'] = array(
+    '#type'           => 'submit',
+    '#value'          => t('Save'),
+  );
+  return $form;
+}
+
+//@see uceditor_global_setting_form
+function uceditor_global_settings_form_submit($form, &$form_state) {
+  $val = $form_state['values'];
+  foreach( array('imagePath','scrawlPath','filePath','catcherPath','imageManagerPath','snapscreenPath','wordImagePath') as $k) {
+    $val[$k] = _uceditor_realpath($val[$k], TRUE);
+  }
+  $settings = uceditor_value_to_setting($val, FALSE);
+  variable_set('uceditor_global_settings', $settings);
+  drupal_set_message(t('Your changes have been saved.'));
+  $form_state['redirect'] = 'admin/config/content/uceditor';
+}
+
+//@see uceditor_setting_form
+function uceditor_profile_load($eid=NULL) {
+  global $user;
+  $profiles = array();
+  $query = db_select('uceditor_settings', 's');
+  if(!is_null($eid)) $query->condition('s.eid', (int) $eid);
+  $result = $query->fields('s')->orderBy('s.weight','ASC')->orderBy('s.eid','DESC')->execute();
+  foreach ($result as $data) {
+    $data->settings = unserialize($data->setting);
+    $data->formats = array();
+    $profiles[$data->eid] = $data;
+  }
+  $input_formats = filter_formats($user);
+  $formats = db_select('uceditor_formats', 'f')->fields('f')->execute();
+  foreach ($formats as $data) {
+    if (isset($input_formats[$data->format])) {
+      $profiles[$data->eid]->formats[$data->format] = $input_formats[$data->format]->name;
+    }
+  }
+  return is_null($eid) ? $profiles : (isset($profiles[$eid]) ? $profiles[$eid] : NULL);
+}
+
+//@see uceditor_menu
+function uceditor_admin_profile_form($form, $form_state, $eid=NULL) {
+  if(!is_null($eid) and $profile = uceditor_profile_load($eid)) {
+    $form['eid'] = array(
+      '#type'  => 'value',
+      '#value' => $eid,
+    );
+  }
+  else {
+    $profile = new stdClass;
+    $profile->formats  = array();
+    $profile->settings = array();
+  }
+  $input_formats = filter_formats();
+  $formats = array();
+  foreach ($input_formats as $format) {
+    $formats[$format->format] = $format->name;
+  }
+  $form['basic'] = array(
+    '#type'         => 'fieldset',
+    '#title'        => t('Basic setup'),
+    '#collapsible'  => TRUE,
+    '#collapsed'    => FALSE,
+  );
+  $form['basic']['name'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('Profile name'),
+    '#default_value'  => isset($profile->name) ? $profile->name : '',
+    '#size'           => 40,
+    '#maxlength'      => 128,
+    '#description'    => t('Enter a name for this profile. This name is only visible within the UCEditor administration page.'),
+    '#required'       => TRUE,
+  );
+  $form['basic']['input_formats'] = array(
+    '#id'             => 'input-formats',
+    '#type'           => 'checkboxes',
+    '#title'          => t('Text formats'),
+    '#default_value'  => !empty($profile->formats) ? array_keys((array) $profile->formats) : array(),
+    '#options'        => $formats,
+    '#description'    => t('Choose the text formats where you want to load UCEditor.')
+  );
+  $form['basic']['lang'] = array(
+    '#type'           => 'select',
+    '#title'          => t('Language'),
+    '#default_value'  => !empty($profile->settings['lang']) ? $profile->settings['lang'] : 'zh-cn',
+    '#options'        => array('zh-cn'=>'简体中文', 'en' => 'English'),
+    '#description'    => t('The language for the UCEditor user interface.')
+  );
+
+  $form['appearance'] = array(
+    '#type'         => 'fieldset',
+    '#title'        => t('Appearance'),
+    '#collapsible'  => TRUE,
+    '#collapsed'    => FALSE,
+  );
+  $form['appearance']['toolbars'] = array(
+    '#type'           => 'textarea',
+    '#title'          => t('toolbars'),
+    '#default_value'  => _uceditor_toolbars($profile->settings),
+    '#description'    => t('Enter a comma separated list of toolbars.'),
+  );
+
+  $form['advanced'] = array(
+    '#type'         => 'fieldset',
+    '#title'        => t('Advanced options'),
+    '#collapsible'  => TRUE,
+    '#collapsed'    => FALSE,
+  );
+  $form['advanced']['allHtmlEnabled'] = array(
+    '#type'           => 'select',
+    '#title'          => t('allHtmlEnabled'),
+    '#options'        => array('Off', 'On'),
+    '#default_value'  => !empty($profile->settings['allHtmlEnabled']) ? $profile->settings['allHtmlEnabled'] : 0,
+    '#description'    => 'if &lt;on&gt; the whole content with css, html will be submit.',
+  );
+  $form['advanced']['autoClearEmptyNode'] = array(
+    '#type'           => 'select',
+    '#title'          => t('autoClearEmptyNode'),
+    '#options'        => array('Off', 'On'),
+    '#default_value'  => !empty($profile->settings['autoClearEmptyNode']) ? $profile->settings['autoClearEmptyNode'] : 1,
+    '#description'    => t('autoClearEmptyNode (e.g. "&lt;/p&gt;").'),
+  );
+  $form['advanced']['elementPathEnabled'] = array(
+    '#type'           => 'select',
+    '#title'          => t('elementPathEnabled'),
+    '#options'        => array('Off', 'On'),
+    '#default_value'  => !empty($profile->settings['elementPathEnabled']) ? $profile->settings['elementPathEnabled'] : 1,
+    '#description'    => t('elementPathEnabled.'),
+  );
+  $form['advanced']['wordCount'] = array(
+    '#type'           => 'select',
+    '#title'          => t('wordCount'),
+    '#options'        => array('Off', 'On'),
+    '#default_value'  => !empty($profile->settings['wordCount']) ? $profile->settings['wordCount'] : 1,
+    '#description'    => t('wordCount.'),
+  );
+  $form['advanced']['maximumWords'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('maximumWords'),
+    '#default_value'  => !empty($profile->settings['maximumWords']) ? $profile->settings['maximumWords'] : '10000',
+    '#description'    => t('maximumWords.'),
+  );
+  $form['advanced']['initialContent'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('initialContent'),
+    '#default_value'  => !empty($profile->settings['initialContent']) ? $profile->settings['initialContent'] : '',
+    '#description'    => t('Default editor content.'),
+  );
+  $form['advanced']['iframeCssUrl'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('CSS file path'),
+    '#default_value'  => !empty($profile->settings['iframeCssUrl']) ? $profile->settings['iframeCssUrl'] : '',
+    '#description'    => t('Enter the path to the CSS file (Example: "/css/editor.css").'),
+  );
+  $form['advanced']['minFrameHeight'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('min FrameHeight'),
+    '#default_value'  => !empty($profile->settings['minFrameHeight']) ? $profile->settings['minFrameHeight'] : '320',
+    '#description'    => t('Set min editor_frame height.'),
+  );
+  $form['advanced']['zIndex'] = array(
+    '#type'           => 'textfield',
+    '#title'          => t('zIndex'),
+    '#default_value'  => !empty($profile->settings['zIndex']) ? $profile->settings['zIndex'] : '900',
+    '#description'    => t('Set editor_frame zIndex.'),
+  );
+
+  drupal_add_js('Drupal.uceditor.admin_profile_form();', array('scope' => 'footer', 'type' => 'inline'));
+
+  $form['submit'] = array(
+    '#type'  => 'submit',
+    '#value' => t('Save'),
+  );
+  return $form;
+}
+
+//@see uceditor_admin_profile_form
+function uceditor_admin_profile_form_submit($form, &$form_state) {
+  $val  = $form_state['values'];
+  $eid  = isset($val['eid']) ? $val['eid'] : NULL;
+  $name = $val['name'];
+  $setting = uceditor_value_to_setting($val, FALSE);
+  if(is_null($eid)) {
+    drupal_set_message(t('Your UCEditor profile was created.'));
+    $eid = db_insert('uceditor_settings')
+            ->fields(array(
+              'name'    => $name,
+              'setting' => $setting,
+            ))
+            ->execute();
+  }
+  else {
+    drupal_set_message(t('Your UCEditor profile was updated.'));
+    db_update('uceditor_settings')
+      ->fields(array(
+        'name'    => $name,
+        'setting' => $setting,
+      ))
+      ->condition('eid', $eid)
+      ->execute();
+    db_delete('uceditor_formats')
+      ->condition('eid', $eid)
+      ->execute();
+  }
+  if (!empty($val['input_formats'])) {
+    foreach (array_keys($val['input_formats']) as $format) {
+      if ($val['input_formats'][$format] != '0') {
+        db_insert('uceditor_formats')
+          ->fields(array(
+            'eid'    => $eid,
+            'format' => $format,
+          ))
+          ->execute();
+      }
+    }
+  }
+  $form_state['redirect'] = 'admin/config/content/uceditor';
+}
+
+//@see uceditor_admin_profile_form
+function _uceditor_toolbars($toolbars) {
+  if(!empty($toolbars['toolbars'][0])) {
+    $t = $toolbars['toolbars'][0];
+    return ',' . implode(',', $t);
+  }
+  return '';
+}
+
+//default _uceditor_toolbars config array
+function uceditor_config_default() {
+  static $config = FALSE;
+  if($config === FALSE) {
+    $path = base_path() . '?q=';
+    $config = array(
+      'lang'                => 'en',
+      'initialContent'      => '',
+      'iframeCssUrl'        => '',
+      'minFrameHeight'      => 320,
+      'autoClearEmptyNode'  => TRUE,
+      'zIndex'              => 900,
+      'toolbars'            => array(
+                                array('fullscreen', 'source', '|', 'undo', 'redo', '|', 'bold', 'italic', 'underline', 'strikethrough', 'superscript', 'subscript', 'removeformat', 'formatmatch',/*'autotypeset', */'|', 'blockquote', '|', 'pasteplain', '|', 'forecolor', 'backcolor', 'insertorderedlist', 'insertunorderedlist','selectall', 'cleardoc', '|', 'customstyle', 'paragraph', '|','rowspacingtop', 'rowspacingbottom','lineheight', '|','fontfamily', 'fontsize', '|', 'directionalityltr', 'directionalityrtl', '|', 'indent', '|', 'justifyleft', 'justifycenter', 'justifyright', 'justifyjustify', '|','touppercase','tolowercase','|', 'link', 'unlink', 'anchor', '|', 'imagenone', 'imageleft', 'imageright', 'imagecenter', '|', 'insertimage', 'emotion',/*'scrawl', 'insertvideo', 'attachment','map',*/ 'gmap', 'insertframe','highlightcode',/*'webapp','pagebreak',*/'template','background', '|', 'horizontal', 'date', 'time', 'spechars','snapscreen', 'wordimage', '|', 'inserttable', 'deletetable', 'insertparagraphbeforetable', 'insertrow', 'deleterow', 'insertcol', 'deletecol', 'mergecells', 'mergeright', 'mergedown', 'splittocells', 'splittorows', 'splittocols', '|', /*'print',*/ 'preview'/*, 'searchreplace','help'*/)
+                                ),
+
+      'imageUrl'            => $path . 'uceditor/imageup',
+      'scrawlUrl'           => $path . 'uceditor/scrawlup',
+      'fileUrl'             => $path . 'uceditor/fileup',
+      'catcherUrl'          => $path . 'uceditor/getremoteimage',
+      'imageManagerUrl'     => $path . 'uceditor/imagemanager',
+      'snapscreenServerUrl' => $path . 'uceditor/imageup',
+      'wordImageUrl'        => $path . 'uceditor/imageup',
+      'getMovieUrl'         => $path . 'uceditor/getmovie',
+
+    );
+  }
+  return $config;
+}
+
+//global settings
+function uceditor_global_setting() {
+  static $config = FALSE;
+  if($config === FALSE) {
+    $settings = variable_get('uceditor_global_settings', NULL);
+    $config = $settings ? unserialize($settings) : uceditor_config_default();
+  }
+  return $config;
+}
+
+//@see uceditor_admin_profile_form_submit
+function uceditor_value_to_setting($val, $merge=TRUE) {
+  unset(
+    $val['eid'],
+    $val['name'],
+    $val['input_formats'],
+    $val['op'],
+    $val['submit'],
+    $val['form_build_id'],
+    $val['form_token'],
+    $val['form_id']
+  );
+  if($merge)
+    $val += uceditor_config_default();
+  _uceditor_fixed_value($val);
+  if(isset($val['toolbars'])) {
+    $toolbars = str_replace(array("\r","\n","\t"," "), '', $val['toolbars']);
+    $toolbars = str_replace(',,',',',$toolbars);
+    $toolbars = trim($toolbars,',');
+    $toolbars = explode(',', $toolbars);
+    unset($val['toolbars']);
+    $val['toolbars'][] = $toolbars;
+  }
+  return serialize($val);
+}
+
+//@see uceditor_menu
+function uceditor_delete_profile_form($form, $form_state, $eid=0) {
+  $form = array();
+  $form['eid'] = array(
+    '#type' => 'value',
+    '#value' => $eid,
+  );
+  $form['question'] = array(
+    '#type' => 'item',
+    '#markup' => t('Are you sure that you want to delete the UCEditor profile?'),
+  );
+  $form['delete'] = array(
+    '#type'  => 'submit',
+    '#id'    => 'delete',
+    '#value' => t('Delete'),
+  );
+  $form['back'] = array(
+    '#type'  => 'submit',
+    '#id'    => 'back',
+    '#value' => t('Cancel'),
+  );
+  return $form;
+}
+
+//@see uceditor_delete_profile_form
+function uceditor_delete_profile_form_submit($form, &$form_state) {
+  $val = $form_state['values'];
+  if ($form_state['clicked_button']['#id'] == 'delete') {
+    $eid = (int) $val['eid'];
+    if($eid == 1) {
+      drupal_set_message(t('The default profile can not be deleted.'), 'warning');
+      return ;
+    }
+    drupal_set_message(t('The UCEditor profile was deleted.'));
+    db_delete('uceditor_settings')
+      ->condition('eid', $eid)
+      ->execute();
+    db_delete('uceditor_formats')
+      ->condition('eid', $eid)
+      ->execute();
+  }
+  $form_state['redirect'] = 'admin/config/content/uceditor';
+}
+
+/**
+ * Implementation of hook_init().
+ */
+function uceditor_init() {
+  drupal_add_css(drupal_get_path('module', 'uceditor') . '/ueditor/themes/default/ueditor.css');
+  drupal_add_js(drupal_get_path('module', 'uceditor') . '/uceditor.js');
+}
+
+/**
+ * Implementation of hook_element_info_alter().
+ */
+function uceditor_element_info_alter(&$types) {
+  $types['text_format']['#pre_render'][] = 'uceditor_pre_render_text_format';
+}
+
+//@see uceditor_element_info_alter
+function uceditor_pre_render_text_format($element) {
+  if (!isset($element['#format'])) {
+    return $element;
+  }
+  if (isset($element['value'])) {
+    $element['value'] = uceditor_load_by_field($element['value'], $element['format']['format']);
+  }
+  return $element;
+}
+
+//@see uceditor_pre_render_text_format
+function uceditor_load_by_field($field, $format) {
+  static $is_running = FALSE;
+  static $processed  = array();
+  static $jssetting  = array();
+  static $configs    = FALSE;
+  static $globals    = FALSE;
+  if (!is_array($format)) return $field;
+  if (!isset($field['#id'])) return $field;
+  if (isset($processed[$field['#id']])) return $field;
+  if (key_exists('#wysiwyg', $field) && !$field['#wysiwyg']) return $field;
+  if (isset($field['#access']) && !$field['#access']) return $field;
+  if ($field['#id'] == "edit-log") return $field;
+  if (isset($field['#attributes']['disabled']) && $field['#attributes']['disabled'] == 'disabled') return $field;
+  $input_format = isset($format['#value']) ? $format['#value'] : $format['#default_value'];
+  drupal_add_js(array('uceditor' => array('default_format' => array($field['#id'] => $input_format), 'imce'=>module_exists('imce'))), 'setting');
+  if(!$configs) $configs = uceditor_profile_load();
+  if(!$is_running) {
+    drupal_add_js('window.UEDITOR_HOME_URL = "'.base_path().drupal_get_path('module', 'uceditor').'/ueditor/";', array('scope'=>'footer', 'type'=>'inline'));
+    drupal_add_js(drupal_get_path('module', 'uceditor') . '/ueditor/editor_config.js', array('type'=>'file', 'scope'=>'footer'));
+    drupal_add_js(drupal_get_path('module', 'uceditor') . '/ueditor/editor_all.js', array('type'=>'file', 'scope'=>'footer'));
+    $is_running = TRUE;
+  }
+  if($globals === FALSE) {
+    $globals = _uceditor_fixed_subpath(uceditor_global_setting());
+  }
+  foreach($configs as $config) {
+    if(isset($config->formats[$input_format]) and !isset($processed[$field['#id']])) {
+      if(!isset($jssetting[$input_format])) {
+        $jssetting[$input_format]['uceditor']['input_formats'][$input_format] = $config->settings + $globals + uceditor_config_default();
+        drupal_add_js($jssetting[$input_format], 'setting');
+      }
+      $editor_js = "Drupal.uceditor.render('{$field['#id']}','{$input_format}');";
+      drupal_add_js($editor_js, array('scope' => 'footer', 'type' => 'inline'));
+      $processed[$field['#id']] = TRUE;
+    }
+  }
+  $field['#uceditor'] = 1;
+  return $field;
+}
+
+//convert string to js var
+function _uceditor_convert_jskey($key) {
+  return strtolower(strtr($key, ' -[]', '____'));
+}
+
+//get the selected option by value
+function _uceditor_option_key($arr, $val, $default=0) {
+  foreach($arr as $k=>$v) {
+    if($val==$v) return $k;
+  }
+  return $default;
+}
+
+//chage %path to realpath
+function _uceditor_realpath($path, $auto=FALSE) {
+  global $user;
+  $lib_path = 'sites/all/libraries';
+  $mod_path = drupal_get_path('module', 'uceditor');
+  $path = strtr($path,
+    array(
+      '%b' => base_path(),
+      '%m' => $mod_path,
+      '%l' => $lib_path,
+      '%f' => variable_get('file_public_path', conf_path() . '/files'),
+      '%d' => strtr(DRUPAL_ROOT,'\\','/'),
+      '%u' => $user->uid,
+    )
+  );
+  $path = strtr($path, '\\', '/');
+  if($auto) $path .= '/';
+  $path = str_replace('//', '/', $path);
+  $path = str_replace('//', '/', $path);
+  if($path !== '/') $path = ltrim($path, '/');
+  return $path;
+}
+
+//change "0" to false
+function _uceditor_fixed_value(&$val) {
+  static $changes = array('customDomain','isShow','autoClearinitialContent','focus','autoClearEmptyNode','fullscreen','readonly','imagePopup','pasteplain','allHtmlEnabled','wordCount','elementPathEnabled','autoHeightEnabled','autoFloatEnabled','sourceEditorFirst','imce');
+  foreach($changes as $v) {
+    if(isset($val[$v]) and empty($val[$v])) $val[$v] = FALSE;
+  }
+}
+
+//@see uceditor_load_by_field
+function _uceditor_fixed_subpath($val) {
+  $base_path = base_path();
+  foreach( array('imagePath','scrawlPath','filePath','catcherPath','imageManagerPath','snapscreenPath','wordImagePath') as $k) {
+    $val[$k] = $base_path . $val[$k];
+  }
+  return $val;
+}
+
+
+/**
+ * For uploaded files
+ *
+ */
+
+//@see uceditor_menu
+function uceditor_file_interface($uptype=NULL) {
+  $webroot  = strtr(DRUPAL_ROOT,'\\','/') . '/';
+  $settings = variable_get('uceditor_global_settings', NULL) ? uceditor_global_setting() : NULL;
+  if(!$settings) return NULL;
+  module_load_include('inc', 'uceditor', 'uceditor.upload');
+  $upload   = new uceditor_upload(array(
+                'webroot'     => $webroot,
+                'file_handle' => 'upfile',
+              ));
+  $data     = array();
+  switch($uptype) {
+    case 'imageup':
+      $data = $upload->setConfig(array('file_type'=>'image','saved_path'=>$settings['imagePath']))
+                     ->doUpload()
+                     ->getResult();
+      $data['title'] = _uceditor_request_string('pictitle');
+    break;
+
+    case 'scrawlup':
+      $action = _uceditor_request_string('action');
+      if($action == 'tmpImg') {
+        $data = $upload->setConfig(array('file_type'=>'image','saved_path'=>$settings['scrawlPath']))
+                       ->doUpload()
+                       ->getResult();
+        exit('<script>parent.ue_callback("' . $data['url'] . '","' . $data['state'] . '")</script>');
+      }
+      else {
+        $data = $upload->setConfig(array('file_handle'=>'content','file_type'=>'image','saved_path'=>$settings['scrawlPath']))
+                       ->doUpload(TRUE)
+                       ->getResult();
+      }
+    break;
+
+    case 'fileup':
+      $allowed_exts = array('rar','doc','docx','xls','xlsx','ppt','pptx','zip','pdf','txt','swf');
+      module_invoke_all('uceditor_allowed_extensions', $allowed_exts);
+      $data = $upload->setConfig(array(
+                      'file_type'    => 'file',
+                      'saved_path'   => $settings['filePath'],
+                      'allowed_exts' => $allowed_exts,
+                      'allowed_size' => 10 * 1024 * 1024,
+                     ))
+                     ->doUpload()
+                     ->getResult();
+      $data['fileType'] = $data['type'];
+    break;
+
+    case 'getremoteimage':
+
+    break;
+
+    case 'imagemanager':
+      $files = _uceditor_getfiles($webroot . $settings['imageManagerPath']);
+      if ( !$files ) return;
+      rsort($files, SORT_STRING);
+      $output = '';
+      foreach ($files as $file) {
+        $output .= $file . 'ue_separate_ue';
+      }
+      exit($output);
+    break;
+
+    case 'getmovie':
+      $key  = _uceditor_request_string('searchKey');
+      $type = _uceditor_request_string('videoType');
+      echo _uceditor_file_get_contents('http://api.tudou.com/v3/gw?method=item.search&appKey=myKey&format=json&kw='.$key.'&pageNo=1&pageSize=20&channelId='.$type.'&inDays=7&media=v&sort=s');
+    break;
+  }
+  echo !empty($data) ? json_encode($data) : '';
+}
+
+//remote file get
+function _uceditor_file_get_contents($url, $time=10) {
+  $ctx = stream_context_create(array('http'=>array('timeout'=>$time)));
+  return file_get_contents($url, null, $ctx);
+}
+
+//get all images from a folder
+function _uceditor_getfiles($dir, $path='', &$files=array()) {
+  $dir = rtrim($dir, '/');
+  if ( !is_dir($dir) ) return null;
+  $handle = opendir($dir);
+  while ( false !== ($file = readdir($handle)) ) {
+    if ( $file != '.' && $file != '..' ) {
+      $dir2 = $dir . '/' . $file;
+      if ( is_dir( $dir2 ) ) {
+        $path2 = $path . $file . '/';
+        _uceditor_getfiles($dir2, $path2, $files);
+      }
+      else {
+        if ( preg_match("/\.(gif|jpeg|jpg|png|bmp)$/i", $file) ) {
+          $files[] = $path . $file;
+        }
+      }
+    }
+  }
+  return $files;
+}
+
+//get request query_string
+function _uceditor_request_string($key) {
+  $req = isset($_REQUEST[$key]) ? $_REQUEST[$key] : NULL;
+  if($req === NULL) {
+    $req = isset($_REQUEST['q']) ? $_REQUEST['q'] : NULL;
+    if(!is_null($req)) {
+      $req = strtr($req,'?','&');
+      parse_str($req,$req);
+      $req = isset($req[$key]) ? $req[$key] : NULL;
+    }
+  }
+  return $req;
+}
